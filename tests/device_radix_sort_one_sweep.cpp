@@ -39,7 +39,7 @@ int main(int argc, char* argv[])
     DeviceRadixSort<BLOCK_SIZE, WARP_NUMS, ITEMS_PER_THREAD> radixsorter;
     radixsorter.create(device);
 
-    "segment_reduce"_test = [&]
+    "radix sort"_test = [&]
     {
         constexpr int32_t   array_size = 1024;
         luisa::vector<uint> input_data(array_size);

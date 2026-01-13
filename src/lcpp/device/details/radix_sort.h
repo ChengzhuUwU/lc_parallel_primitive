@@ -75,10 +75,10 @@ namespace details
                          ms_radix_sort_exclusive_sum_shader,
                          [&](BufferVar<uint> d_bins_in, BufferVar<uint> d_bins_out)
                          {
-                             constexpr uint BINS_PER_THREAD = (RADIX_DIGIT + BLOCK_SIZE - 1) / BLOCK_SIZE;
-
                              set_block_size(BLOCK_SIZE);
                              set_warp_size(WARP_SIZE);
+
+                             constexpr uint BINS_PER_THREAD = (RADIX_DIGIT + BLOCK_SIZE - 1) / BLOCK_SIZE;
                              ArrayVar<uint, BINS_PER_THREAD> bins;
 
                              UInt bin_start = block_id().x * UInt(RADIX_DIGIT);
@@ -120,21 +120,27 @@ namespace details
             lazy_compile(
                 device,
                 ms_radix_sort_exclusive_sum_shader,
-                [&](BufferVar<uint> d_bins_in, BufferVar<uint> d_bins_out)
+                [&](BufferVar<uint>    d_lookback,
+                    BufferVar<uint>    d_ctrs,
+                    BufferVar<uint>    d_bins_in,
+                    BufferVar<uint>    d_bins_out,
+                    BufferVar<KeyType> d_keys_in,
+                    BufferVar<KeyType> d_keys_out,
+                    uint               num_elements,
+                    uint               start_bit,
+                    uint               end_bit) noexcept
                 {
                     set_block_size(BLOCK_SIZE);
                     set_warp_size(WARP_SIZE);
 
-                    set_block_size(BLOCK_SIZE);
-                    set_warp_size(WARP_SIZE);
                     using RadixSortOneSweepPolicy = AgentRadixSortOneSweepPolicy<1u, 8u, KeyType, 1u, RADIX_BIT>;
                     using AgentT =
                         AgentRadixSortOneSweep<KeyType, ValueType, RADIX_BIT, RadixSortOneSweepPolicy::RANK_NUM_PARTS, false, IS_DESCENDING, BLOCK_SIZE, WARP_SIZE, ITEMS_PER_THREAD>;
 
-                    // SmemTypePtr<uint> s_bins = new SmemType<uint>{AgentT::SHARED_MEM_SIZE};
+                    SmemTypePtr<uint> s_bins = new SmemType<uint>{AgentT::SHARED_MEM_SIZE};
 
-                    // AgentT agent(s_bins, d_bins_out, d_keys_in, num_elements, start_bit, end_bit);
-                    // agent.Process();
+                    AgentT agent(s_bins, d_lookback, d_ctrs, d_bins_in, d_bins_out, d_keys_in, d_keys_out, num_elements, start_bit, end_bit);
+                    agent.Process();
                 });
             return ms_radix_sort_exclusive_sum_shader;
         };

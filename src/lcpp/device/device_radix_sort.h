@@ -209,6 +209,22 @@ class DeviceRadixSort : public LuisaModule
         // }
 
         // one sweep
+        // using RadixSortOneSweep =
+        //     details::RadixSortOneSweepModule<KeyType, KeyType, is_descending, ONESWEEP_BLOCK_THREADS, WARP_NUMS, ONESWEEP_ITEMS_PER_THREAD>;
+        // using RadixSortOneSweepKernel = RadixSortOneSweep::RadixSortOneSweepKernel;
+
+        // auto radix_sort_onesweep_key = get_type_and_op_desc<KeyType, ValueType>()
+        //                                + luisa::string(is_descending ? "_desc" : "_asc");
+        // auto ms_radix_sort_onesweep_it = ms_radix_sort_one_sweep_map.find(radix_sort_onesweep_key);
+        // if(ms_radix_sort_onesweep_it == ms_radix_sort_one_sweep_map.end())
+        // {
+        //     auto shader = RadixSortOneSweep().compile(m_device);
+        //     ms_radix_sort_one_sweep_map.try_emplace(radix_sort_onesweep_key, std::move(shader));
+        //     ms_radix_sort_onesweep_it = ms_radix_sort_one_sweep_map.find(radix_sort_onesweep_key);
+        // }
+        // auto ms_radix_sort_onesweep_ptr =
+        //     reinterpret_cast<RadixSortOneSweepKernel*>(&(*ms_radix_sort_onesweep_it->second));
+
         auto d_key_tmp = d_keys.alternate();
         // auto d_value_tmp = d_values.alternate();
         if(!is_overwrite_okay && num_passes % 2 == 0)
@@ -231,13 +247,11 @@ class DeviceRadixSort : public LuisaModule
                 d_lookback_buffer = m_device.create_buffer<uint>(num_blocks * RADIX_DIGITS);
             }
 
-            if(!is_overwrite_okay && pass == 0)
-            {
-                // d_keys   = num_passes % 2 == 0 ? DoubleBuffer<KeyT>(d_keys_tmp, d_keys_tmp2) :
-                //                                  DoubleBuffer<KeyT>(d_keys_tmp2, d_keys_tmp);
-                // d_values = num_passes % 2 == 0 ? DoubleBuffer<ValueT>(d_values_tmp, d_values_tmp2) :
-                //                                  DoubleBuffer<ValueT>(d_values_tmp2, d_values_tmp);
-            }
+            // if(!is_overwrite_okay && pass == 0)
+            // {
+            //     d_keys = num_passes % 2 == 0 ? DoubleBuffer<KeyType>(d_keys_tmp, d_keys_tmp2) :
+            //                                    DoubleBuffer<KeyType>(d_keys_tmp2, d_keys_tmp);
+            // }
             d_keys.selector ^= 1;
             // d_values.selector ^= 1;
         }
@@ -256,9 +270,9 @@ class DeviceRadixSort : public LuisaModule
     {
         const uint RADIX_BITS   = OneSweepSmallKeyTunedPolicy<KeyType>::ONESWEEP_RAIDX_BITS;
         const uint RADIX_DIGITS = 1 << RADIX_BITS;
-        const uint ONESWEEP_ITMES_PER_THREADS = ITEMS_PER_THREAD;
-        const uint ONESWEEP_BLOCK_THREADS     = m_block_size;
-        const uint ONESWEEP_TILE_ITEMS        = ONESWEEP_ITMES_PER_THREADS * ONESWEEP_BLOCK_THREADS;
+        const uint ONESWEEP_ITEMS_PER_THREAD = ITEMS_PER_THREAD;
+        const uint ONESWEEP_BLOCK_THREADS    = m_block_size;
+        const uint ONESWEEP_TILE_ITEMS       = ONESWEEP_ITEMS_PER_THREAD * ONESWEEP_BLOCK_THREADS;
 
         const auto PORTION_SIZE = ((1 << 28) - 1) / ONESWEEP_TILE_ITEMS * ONESWEEP_TILE_ITEMS;
 
@@ -284,7 +298,7 @@ class DeviceRadixSort : public LuisaModule
 
         // radix sort histogram
         using RadixSortHistogram =
-            details::RadixSortHistogramModule<KeyType, is_descending, ONESWEEP_BLOCK_THREADS, WARP_NUMS, ONESWEEP_ITMES_PER_THREADS>;
+            details::RadixSortHistogramModule<KeyType, is_descending, ONESWEEP_BLOCK_THREADS, WARP_NUMS, ONESWEEP_ITEMS_PER_THREAD>;
         using RadixSortHistogramKernel = RadixSortHistogram::RadixSortHistogramKernel;
         auto radix_sort_histogram_key  = get_type_and_op_desc<KeyType, ValueType>()
                                         + luisa::string(is_descending ? "_desc" : "_asc");
@@ -300,11 +314,50 @@ class DeviceRadixSort : public LuisaModule
 
         cmdlist << (*ms_radix_sort_histogram_ptr)(d_bin_in_buffer.view(), d_keys.current(), num_items, begin_bit, end_bit)
                        .dispatch(max_num_blocks * num_portions);
+
+        // radix sort one sweep
+        using RadixSortOneSweep =
+            details::RadixSortOneSweepModule<KeyType, ValueType, is_descending, ONESWEEP_BLOCK_THREADS, WARP_NUMS, ONESWEEP_ITEMS_PER_THREAD>;
+        using RadixSortOneSweepKernel = RadixSortOneSweep::RadixSortOneSweepKernel;
+
+        auto radix_sort_onesweep_key = get_type_and_op_desc<KeyType, ValueType>()
+                                       + luisa::string(is_descending ? "_desc" : "_asc");
+        auto ms_radix_sort_onesweep_it = ms_radix_sort_one_sweep_map.find(radix_sort_onesweep_key);
+        if(ms_radix_sort_onesweep_it == ms_radix_sort_one_sweep_map.end())
+        {
+            auto shader = RadixSortOneSweep().compile(m_device);
+            ms_radix_sort_one_sweep_map.try_emplace(radix_sort_onesweep_key, std::move(shader));
+            ms_radix_sort_onesweep_it = ms_radix_sort_one_sweep_map.find(radix_sort_onesweep_key);
+        }
+        auto ms_radix_sort_onesweep_ptr =
+            reinterpret_cast<RadixSortOneSweepKernel*>(&(*ms_radix_sort_onesweep_it->second));
+
+        for(int current_bit = begin_bit, pass = 0; current_bit < end_bit; current_bit += RADIX_BITS, ++pass)
+        {
+            cmdlist << (*ms_radix_sort_onesweep_ptr)(d_bin_in_buffer.view(),
+                                                     d_keys.alternate(),
+                                                     d_keys.current(),
+                                                     d_values.alternate(),
+                                                     d_values.current(),
+                                                     num_items,
+                                                     begin_bit,
+                                                     end_bit)
+                           .dispatch(max_num_blocks * ONESWEEP_ITEMS_PER_THREAD);
+            // if(!is_overwrite_okay && pass == 0)
+            // {
+            //     d_keys = num_passes % 2 == 0 ? DoubleBuffer<KeyType>(d_keys_tmp, d_keys_tmp2) :
+            //                                    DoubleBuffer<KeyType>(d_keys_tmp2, d_keys_tmp);
+            //     d_values = num_passes % 2 == 0 ? DoubleBuffer<ValueType>(d_values_tmp, d_values_tmp2) :
+            //                                      DoubleBuffer<ValueType>(d_values_tmp2, d_values_tmp);
+            // }
+            d_keys.selector ^= 1;
+            d_values.selector ^= 1;
+        }
     }
 
   private:
     luisa::unordered_map<luisa::string, luisa::shared_ptr<luisa::compute::Resource>> ms_radix_sort_histogram_map;
     luisa::unordered_map<luisa::string, luisa::shared_ptr<luisa::compute::Resource>> ms_radix_sort_exclusive_sum_map;
-    luisa::unordered_map<luisa::string, luisa::shared_ptr<luisa::compute::Resource>> ms_onesweep_radix_sort_map;
+    luisa::unordered_map<luisa::string, luisa::shared_ptr<luisa::compute::Resource>> ms_radix_sort_one_sweep_map;
 };
 }  // namespace luisa::parallel_primitive
