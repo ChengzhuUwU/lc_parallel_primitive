@@ -222,7 +222,13 @@ static luisa::compute::Callable get_lane_mask_ge = [](luisa::compute::UInt lane_
 };
 
 static luisa::compute::Callable get_lane_mask_le = [](luisa::compute::UInt lane_id)
-{ return (1u << (lane_id + 1)) - 1u; };
+{
+    // Use ~(0xFFFFFFFEu << lane_id) to avoid undefined behavior when lane_id == 31.
+    // The original (1u << (lane_id + 1)) - 1u computes 1u << 32 for lane 31,
+    // which is UB: CUDA PTX clamps to 0 (correct), but DX12/HLSL takes modulo 32
+    // giving 1 (wrong: returns 0 instead of 0xFFFFFFFF).
+    return ~(0xFFFFFFFEu << lane_id);
+};
 
 template <size_t LOGIC_WARP_SIZE>
 inline luisa::compute::UInt warp_mask(luisa::compute::UInt warp_id)
@@ -259,7 +265,7 @@ namespace details
         // using a ballot loop instead
         static compute::UInt match_any(compute::UInt label)
         {
-            compute::UInt retval;
+            compute::UInt retval = 0xFFFFFFFFu;
 
             // Extract masks of common threads for each bit
             for(auto BIT = 0u; BIT < LABEL_BITS; ++BIT)
@@ -276,9 +282,8 @@ namespace details
                     mask = ~mask;
                 };
 
-                retval &= mask;
                 // Remove peers who differ
-                retval = (BIT == 0) ? mask : retval & mask;
+                retval = retval & mask;
             }
 
             return retval;
